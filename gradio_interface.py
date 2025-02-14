@@ -75,11 +75,9 @@ async def get_models():
 
 @app.post("/generate")
 async def generate_speech(request: GenerateRequest):
-    """Generate speech from text with specified parameters"""
     try:
         model = load_model_if_needed(request.model_choice)
 
-        # Set up emotion tensor if provided
         if request.emotion and "emotion" not in request.unconditional_keys:
             emotion = [
                 request.emotion.happiness,
@@ -91,14 +89,12 @@ async def generate_speech(request: GenerateRequest):
                 request.emotion.other,
                 request.emotion.neutral
             ]
-            emotion_tensor = torch.tensor(emotion, device=device)
+            emotion_tensor = torch.tensor(emotion, device=device).unsqueeze(0)
         else:
             emotion_tensor = None
 
-        # Set up VQ score tensor
-        vq_tensor = torch.tensor([request.vq_score] * 8, device=device).unsqueeze(0)
+        vq_tensor = torch.tensor([[request.vq_score] * 8], device=device)
 
-        # Create conditioning dictionary
         cond_dict = make_cond_dict(
             text=request.text,
             language=request.language,
@@ -113,7 +109,6 @@ async def generate_speech(request: GenerateRequest):
         )
         conditioning = model.prepare_conditioning(cond_dict)
 
-        # Generate audio
         torch.manual_seed(request.seed)
         codes = model.generate(
             prefix_conditioning=conditioning,
@@ -126,18 +121,26 @@ async def generate_speech(request: GenerateRequest):
         wav_out = model.autoencoder.decode(codes).cpu().detach()
         sr_out = model.autoencoder.sampling_rate
 
-        if wav_out.dim() == 2 and wav_out.size(0) > 1:
-            wav_out = wav_out[0:1, :]
+        # Ensure we have a 2D tensor for saving (channels, samples)
+        if wav_out.dim() > 2:
+            wav_out = wav_out.squeeze()  # Remove any extra dimensions
+        if wav_out.dim() == 1:
+            wav_out = wav_out.unsqueeze(0)  # Add channel dimension if needed
 
-        # Convert to WAV format
+        # Now wav_out should be [channels, samples]
         wav_data = BytesIO()
-        torchaudio.save(wav_data, wav_out.unsqueeze(0), sr_out, format="wav")
+        torchaudio.save(wav_data, wav_out, sr_out, format="wav")
         wav_data.seek(0)
 
         return StreamingResponse(wav_data, media_type="audio/wav")
 
     except Exception as e:
+        print(f"Error details: {str(e)}")
+        print("Tensor shape before save:", wav_out.shape)  # Debug info
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.post("/speaker_embedding")
 async def create_speaker_embedding(
