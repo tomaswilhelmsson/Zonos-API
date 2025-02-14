@@ -1,3 +1,6 @@
+import multiprocessing
+multiprocessing.set_start_method('spawn', force=True)
+
 import torch
 import torchaudio
 import gradio as gr
@@ -11,7 +14,6 @@ from fastapi.responses import StreamingResponse
 
 from zonos.model import Zonos
 from zonos.conditioning import make_cond_dict, supported_language_codes
-
 # Initialize FastAPI
 app = FastAPI(title="Zonos API", description="API for Zonos text-to-speech model")
 
@@ -504,18 +506,22 @@ def build_interface():
     return demo
 
 
+# Server run functions defined at module level
+def run_gradio():
+    demo = build_interface()
+    share = getenv("GRADIO_SHARE", "False").lower() in ("true", "1", "t")
+    demo.launch(server_name="0.0.0.0", server_port=7860, share=share)
+
+def run_fastapi():
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+
 # Modified main to run both FastAPI and Gradio
 if __name__ == "__main__":
-    import uvicorn
+    import multiprocessing
+    multiprocessing.set_start_method('spawn', force=True)
+
     from multiprocessing import Process
-
-    def run_gradio():
-        demo = build_interface()
-        share = getenv("GRADIO_SHARE", "False").lower() in ("true", "1", "t")
-        demo.launch(server_name="0.0.0.0", server_port=7860, share=share)
-
-    def run_fastapi():
-        uvicorn.run(app, host="0.0.0.0", port=8000)
 
     # Run both servers in separate processes
     gradio_process = Process(target=run_gradio)
