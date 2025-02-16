@@ -1,16 +1,39 @@
 version: '3.8'
-
 services:
-  zonos:
+  zonos-api:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: zonos_container
+    container_name: zonos_api
     runtime: nvidia
-    network_mode: "host"
+    ports:
+      - "8000:8000"
+    stdin_open: true
+    tty: true
+    command: ["python3", "api.py"]
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=0
+      - MODEL_CACHE_DIR=/app/models
+    volumes:
+      - ./models:/app/models
+
+  zonos-ui:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: zonos_ui
+    runtime: nvidia
+    ports:
+      - "7860:7860"
     stdin_open: true
     tty: true
     command: ["python3", "gradio_interface.py"]
     environment:
       - NVIDIA_VISIBLE_DEVICES=0
       - GRADIO_SHARE=False
+      - MODEL_CACHE_DIR=/app/models
+    volumes:
+      - ./models:/app/models
+
+volumes:
+  models:
