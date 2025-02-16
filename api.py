@@ -8,6 +8,8 @@ from pydantic import BaseModel, Field
 from typing import Dict, Optional, List
 from io import BytesIO
 import numpy as np
+from pydub import AudioSegment
+import soundfile as sf
 from zonos.model import Zonos
 from zonos.conditioning import make_cond_dict, supported_language_codes
 from fastapi.responses import StreamingResponse
@@ -102,11 +104,26 @@ async def create_speech(request: SpeechRequest):
         if wav_out.dim() == 1:
             wav_out = wav_out.unsqueeze(0)
 
-        # Convert to requested format
+        # Convert to float32 numpy array
+        audio_np = wav_out.numpy().astype(np.float32)
+        
         buffer = BytesIO()
-        torchaudio.save(buffer, wav_out, sr_out, format=request.response_format)
+        
+        if request.response_format == "mp3":
+            # Save as WAV first
+            temp_buffer = BytesIO()
+            sf.write(temp_buffer, audio_np.T, sr_out, format='WAV')
+            temp_buffer.seek(0)
+            
+            # Convert to MP3 using pydub
+            audio_segment = AudioSegment.from_wav(temp_buffer)
+            audio_segment.export(buffer, format="mp3", bitrate="192k")
+        else:
+            # Save as WAV directly
+            sf.write(buffer, audio_np.T, sr_out, format='WAV')
+        
         buffer.seek(0)
-
+        
         return StreamingResponse(
             buffer, 
             media_type=f"audio/{request.response_format}"
