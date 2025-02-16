@@ -4,20 +4,12 @@ multiprocessing.set_start_method('spawn', force=True)
 import torch
 import torchaudio
 import gradio as gr
-import numpy as np
-from fastapi import FastAPI, File, UploadFile, HTTPException
-from pydantic import BaseModel, Field
-from typing import List, Optional
-from io import BytesIO
 from os import getenv
-from fastapi.responses import StreamingResponse
 
 from zonos.model import Zonos
 from zonos.conditioning import make_cond_dict, supported_language_codes
-# Initialize FastAPI
-app = FastAPI(title="Zonos API", description="API for Zonos text-to-speech model")
 
-# Keep existing model management code
+# Model Management
 device = "cuda"
 CURRENT_MODEL_TYPE = None
 CURRENT_MODEL = None
@@ -34,139 +26,6 @@ def load_model_if_needed(model_choice: str):
         CURRENT_MODEL_TYPE = model_choice
         print(f"{model_choice} model loaded successfully!")
     return CURRENT_MODEL
-
-# API Models
-class EmotionConfig(BaseModel):
-    happiness: float = Field(1.0, ge=0.0, le=1.0)
-    sadness: float = Field(0.05, ge=0.0, le=1.0)
-    disgust: float = Field(0.05, ge=0.0, le=1.0)
-    fear: float = Field(0.05, ge=0.0, le=1.0)
-    surprise: float = Field(0.05, ge=0.0, le=1.0)
-    anger: float = Field(0.05, ge=0.0, le=1.0)
-    other: float = Field(0.1, ge=0.0, le=1.0)
-    neutral: float = Field(0.2, ge=0.0, le=1.0)
-
-class GenerateRequest(BaseModel):
-    model_choice: str = Field("Zyphra/Zonos-v0.1-transformer", description="Model variant to use")
-    text: str = Field(..., max_length=500, description="Text to synthesize")
-    language: str = Field("en-us", description="Language code")
-    dnsmos_ovrl: float = Field(4.0, ge=1.0, le=5.0)
-    fmax: float = Field(24000, ge=0, le=24000)
-    vq_score: float = Field(0.78, ge=0.5, le=0.8)
-    pitch_std: float = Field(45.0, ge=0.0, le=300.0)
-    speaking_rate: float = Field(15.0, ge=5.0, le=30.0)
-    cfg_scale: float = Field(2.0, ge=1.0, le=5.0)
-    min_p: float = Field(0.15, ge=0.0, le=1.0)
-    seed: int = Field(420)
-    emotion: Optional[EmotionConfig] = None
-    unconditional_keys: List[str] = Field(["emotion"], description="Conditioning values to ignore")
-
-# API Endpoints
-@app.get("/models")
-async def get_models():
-    """Get available models and their configurations"""
-    return {
-        "available_models": [
-            "Zyphra/Zonos-v0.1-transformer",
-            "Zyphra/Zonos-v0.1-hybrid"
-        ],
-        "supported_languages": supported_language_codes
-    }
-
-@app.post("/generate")
-async def generate_speech(request: GenerateRequest):
-    try:
-        model = load_model_if_needed(request.model_choice)
-
-        if request.emotion and "emotion" not in request.unconditional_keys:
-            emotion = [
-                request.emotion.happiness,
-                request.emotion.sadness,
-                request.emotion.disgust,
-                request.emotion.fear,
-                request.emotion.surprise,
-                request.emotion.anger,
-                request.emotion.other,
-                request.emotion.neutral
-            ]
-            emotion_tensor = torch.tensor(emotion, device=device).unsqueeze(0)
-        else:
-            emotion_tensor = None
-
-        vq_tensor = torch.tensor([[request.vq_score] * 8], device=device)
-
-        cond_dict = make_cond_dict(
-            text=request.text,
-            language=request.language,
-            emotion=emotion_tensor,
-            vqscore_8=vq_tensor,
-            fmax=request.fmax,
-            pitch_std=request.pitch_std,
-            speaking_rate=request.speaking_rate,
-            dnsmos_ovrl=request.dnsmos_ovrl,
-            device=device,
-            unconditional_keys=request.unconditional_keys
-        )
-        conditioning = model.prepare_conditioning(cond_dict)
-
-        torch.manual_seed(request.seed)
-        codes = model.generate(
-            prefix_conditioning=conditioning,
-            max_new_tokens=86 * 30,
-            cfg_scale=request.cfg_scale,
-            batch_size=1,
-            sampling_params=dict(min_p=request.min_p)
-        )
-
-        wav_out = model.autoencoder.decode(codes).cpu().detach()
-        sr_out = model.autoencoder.sampling_rate
-
-        # Ensure we have a 2D tensor for saving (channels, samples)
-        if wav_out.dim() > 2:
-            wav_out = wav_out.squeeze()  # Remove any extra dimensions
-        if wav_out.dim() == 1:
-            wav_out = wav_out.unsqueeze(0)  # Add channel dimension if needed
-
-        # Now wav_out should be [channels, samples]
-        wav_data = BytesIO()
-        torchaudio.save(wav_data, wav_out, sr_out, format="wav")
-        wav_data.seek(0)
-
-        return StreamingResponse(wav_data, media_type="audio/wav")
-
-    except Exception as e:
-        print(f"Error details: {str(e)}")
-        print("Tensor shape before save:", wav_out.shape)  # Debug info
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/speaker_embedding")
-async def create_speaker_embedding(
-    file: UploadFile = File(...),
-    model_choice: str = "Zyphra/Zonos-v0.1-transformer"
-):
-    """Generate speaker embedding from audio file"""
-    try:
-        model = load_model_if_needed(model_choice)
-
-        # Read audio file
-        content = await file.read()
-        audio_data = BytesIO(content)
-        wav, sr = torchaudio.load(audio_data)
-
-        # Generate embedding
-        speaker_embedding = model.make_speaker_embedding(wav, sr)
-
-        # Convert to list for JSON response
-        embedding_list = speaker_embedding.cpu().numpy().tolist()
-
-        return {"speaker_embedding": embedding_list}
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
 
 def update_ui(model_choice):
     """
@@ -221,7 +80,6 @@ def update_ui(model_choice):
         unconditional_keys_update,
     )
 
-
 def generate_audio(
     model_choice,
     text,
@@ -249,10 +107,7 @@ def generate_audio(
     unconditional_keys,
     progress=gr.Progress(),
 ):
-    """
-    Generates audio based on the provided UI parameters.
-    We do NOT use language_id or ctc_loss even if the model has them.
-    """
+    """Generates audio based on the provided UI parameters."""
     selected_model = load_model_if_needed(model_choice)
 
     speaker_noised_bool = bool(speaker_noised)
@@ -328,7 +183,6 @@ def generate_audio(
         wav_out = wav_out[0:1, :]
     return (sr_out, wav_out.squeeze().numpy()), seed
 
-
 def build_interface():
     with gr.Blocks() as demo:
         with gr.Row():
@@ -343,7 +197,7 @@ def build_interface():
                     label="Text to Synthesize",
                     value="Zonos uses eSpeak for text to phoneme conversion!",
                     lines=4,
-                    max_length=500,  # approximately
+                    max_length=500,
                 )
                 language = gr.Dropdown(
                     choices=supported_language_codes,
@@ -508,30 +362,10 @@ def build_interface():
 
     return demo
 
-
-# Server run functions defined at module level
 def run_gradio():
     demo = build_interface()
     share = getenv("GRADIO_SHARE", "False").lower() in ("true", "1", "t")
     demo.launch(server_name="0.0.0.0", server_port=7860, share=share)
 
-def run_fastapi():
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
-
-# Modified main to run both FastAPI and Gradio
 if __name__ == "__main__":
-    import multiprocessing
-    multiprocessing.set_start_method('spawn', force=True)
-
-    from multiprocessing import Process
-
-    # Run both servers in separate processes
-    gradio_process = Process(target=run_gradio)
-    fastapi_process = Process(target=run_fastapi)
-
-    gradio_process.start()
-    fastapi_process.start()
-
-    gradio_process.join()
-    fastapi_process.join()
+    run_gradio()
