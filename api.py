@@ -8,11 +8,10 @@ from pydantic import BaseModel, Field
 from typing import Dict, Optional, List
 from io import BytesIO
 import numpy as np
-from pydub import AudioSegment
-import soundfile as sf
 from zonos.model import Zonos
 from zonos.conditioning import make_cond_dict, supported_language_codes
 from fastapi.responses import StreamingResponse
+import time
 
 app = FastAPI(title="Zonos API", description="OpenAI-compatible TTS API for Zonos")
 
@@ -44,17 +43,17 @@ class SpeechRequest(BaseModel):
 
 class VoiceResponse(BaseModel):
     voice_id: str
-    created: int
+    created: int  # Unix timestamp
 
 # API Endpoints
 @app.post("/v1/audio/speech")
 async def create_speech(request: SpeechRequest):
     try:
         model = MODELS["transformer" if "transformer" in request.model else "hybrid"]
-        
+
         # Convert speed to speaking_rate (15.0 is default)
         speaking_rate = 15.0 * request.speed
-        
+
         # Prepare emotion tensor if provided
         emotion_tensor = None
         if request.emotion:
@@ -83,9 +82,9 @@ async def create_speech(request: SpeechRequest):
             device="cuda",
             unconditional_keys=[] if request.emotion else ["emotion"]
         )
-        
+
         conditioning = model.prepare_conditioning(cond_dict)
-        
+
         # Generate audio
         codes = model.generate(
             prefix_conditioning=conditioning,
@@ -104,28 +103,13 @@ async def create_speech(request: SpeechRequest):
         if wav_out.dim() == 1:
             wav_out = wav_out.unsqueeze(0)
 
-        # Convert to float32 numpy array
-        audio_np = wav_out.numpy().astype(np.float32)
-        
+        # Convert to requested format
         buffer = BytesIO()
-        
-        if request.response_format == "mp3":
-            # Save as WAV first
-            temp_buffer = BytesIO()
-            sf.write(temp_buffer, audio_np.T, sr_out, format='WAV')
-            temp_buffer.seek(0)
-            
-            # Convert to MP3 using pydub
-            audio_segment = AudioSegment.from_wav(temp_buffer)
-            audio_segment.export(buffer, format="mp3", bitrate="192k")
-        else:
-            # Save as WAV directly
-            sf.write(buffer, audio_np.T, sr_out, format='WAV')
-        
+        torchaudio.save(buffer, wav_out, sr_out, format=request.response_format)
         buffer.seek(0)
-        
+
         return StreamingResponse(
-            buffer, 
+            buffer,
             media_type=f"audio/{request.response_format}"
         )
 
@@ -138,26 +122,37 @@ async def create_voice(
     name: str = None
 ):
     try:
+        # Read the audio file
         content = await file.read()
         audio_data = BytesIO(content)
-        
+
         # Load and process audio
         wav, sr = torchaudio.load(audio_data)
-        
-        # Generate embedding using transformer model
+
+        # Generate embedding using transformer model (handles GPU automatically)
         speaker_embedding = MODELS["transformer"].make_speaker_embedding(wav, sr)
-        
+
         # Generate unique voice ID and cache embedding
-        voice_id = f"voice_{len(VOICE_CACHE)}"
-        VOICE_CACHE[voice_id] = speaker_embedding
+        timestamp = int(time.time())
+        voice_id = f"voice_{timestamp}_{len(VOICE_CACHE)}"
+        VOICE_CACHE[voice_id] = speaker_embedding.to("cuda")  # Ensure it's on GPU
 
         return VoiceResponse(
             voice_id=voice_id,
-            created=int(torch.cuda.current_stream().cuda_stream.query())
+            created=timestamp
         )
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        error_msg = str(e)
+        if "cuda" in error_msg.lower():
+            error_msg = "GPU error while processing voice. Please try again."
+        elif "load" in error_msg.lower():
+            error_msg = "Failed to load audio file. Please ensure it's a valid audio format."
+
+        raise HTTPException(
+            status_code=500,
+            detail=error_msg
+        )
 
 @app.get("/v1/audio/models")
 async def list_models():
