@@ -15,6 +15,7 @@ import time
 import argparse
 from dataclasses import dataclass
 import os
+from zonos.utils import DEFAULT_DEVICE
 
 @dataclass
 class app_config:
@@ -192,7 +193,7 @@ async def startup_event():
 if __name__ == "__main__":
     import uvicorn
     parser = argparse.ArgumentParser()
-    parser.add_argument("--device", default="cuda:0", help="The device to use (cpu, cuda, cuda:0....)", type=str)
+    parser.add_argument("--device", default=, help="The device to use (cpu, cuda, cuda:0....)", type=str)
     args = parser.parse_args()
     if os.getenv("ZONOS_DEVICE"):
         config.device = os.getenv("ZONOS_DEVICE")
