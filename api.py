@@ -193,11 +193,14 @@ async def startup_event():
 if __name__ == "__main__":
     import uvicorn
     parser = argparse.ArgumentParser()
-    parser.add_argument("--device", default=, help="The device to use (cpu, cuda, cuda:0....)", type=str)
+    parser.add_argument("--device", default="cuda", help="The device to use (cpu, cuda, cuda:0....)", type=str)
     args = parser.parse_args()
     if os.getenv("ZONOS_DEVICE"):
-        config.device = os.getenv("ZONOS_DEVICE")
+        config.device = torch.device(os.getenv("ZONOS_DEVICE"))
     elif args.device:
-        config.device = args.device
+        config.device = torch.device(args.device)
+    else:
+        args.device = DEFAULT_DEVICE
+        
     print(f"Zonos using device: {config.device}")
     uvicorn.run(app, host="0.0.0.0", port=8000)
