@@ -12,8 +12,17 @@ from zonos.model import Zonos
 from zonos.conditioning import make_cond_dict, supported_language_codes
 from fastapi.responses import StreamingResponse
 import time
+import argparse
+from dataclasses import dataclass
+import os
+
+@dataclass
+class app_config:
+    device: str
+
 
 app = FastAPI(title="Zonos API", description="OpenAI-compatible TTS API for Zonos")
+config = app_config(device="cuda:0")
 
 # Model Management
 MODELS = {
@@ -25,7 +34,8 @@ VOICE_CACHE: Dict[str, torch.Tensor] = {}
 
 def load_models():
     """Load both models at startup and keep them in VRAM"""
-    device = "cuda"
+    device = config.device
+    print(f"load_model: {device}")
     MODELS["transformer"] = Zonos.from_pretrained("Zyphra/Zonos-v0.1-transformer", device=device)
     MODELS["transformer"].requires_grad_(False).eval()
     MODELS["hybrid"] = Zonos.from_pretrained("Zyphra/Zonos-v0.1-hybrid", device=device)
@@ -67,7 +77,7 @@ async def create_speech(request: SpeechRequest):
                 request.emotion.get("other", 0.1),
                 request.emotion.get("neutral", 0.2)
             ]
-            emotion_tensor = torch.tensor(emotion_values, device="cuda").unsqueeze(0)
+            emotion_tensor = torch.tensor(emotion_values, device=config.device).unsqueeze(0)
 
         # Get voice embedding from cache if provided
         speaker_embedding = VOICE_CACHE.get(request.voice) if request.voice else None
@@ -79,7 +89,7 @@ async def create_speech(request: SpeechRequest):
             speaker=speaker_embedding,
             emotion=emotion_tensor,
             speaking_rate=speaking_rate,
-            device="cuda",
+            device=config.device,
             unconditional_keys=[] if request.emotion else ["emotion"]
         )
 
@@ -135,7 +145,7 @@ async def create_voice(
         # Generate unique voice ID and cache embedding
         timestamp = int(time.time())
         voice_id = f"voice_{timestamp}_{len(VOICE_CACHE)}"
-        VOICE_CACHE[voice_id] = speaker_embedding.to("cuda")  # Ensure it's on GPU
+        VOICE_CACHE[voice_id] = speaker_embedding.to(config.device)  # Ensure it's on GPU
 
         return VoiceResponse(
             voice_id=voice_id,
@@ -181,4 +191,12 @@ async def startup_event():
 
 if __name__ == "__main__":
     import uvicorn
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--device", default="cuda:0", help="The device to use (cpu, cuda, cuda:0....)", type=str)
+    args = parser.parse_args()
+    if os.getenv("ZONOS_DEVICE"):
+        config.device = os.getenv("ZONOS_DEVICE")
+    elif args.device:
+        config.device = args.device
+    print(f"Zonos using device: {config.device}")
     uvicorn.run(app, host="0.0.0.0", port=8000)
